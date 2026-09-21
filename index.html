@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Encuesta viva</title>
+  <style>
+    :root { --teal: #1f4e5f; --gold: #cf9a34; --sand: #faf0d6; }
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { color: var(--teal); font-size: 1.5rem; }
+    .pregunta { background: var(--sand); border-left: 4px solid var(--gold); padding: 1rem; font-size: 1.15rem; margin: 1rem 0; }
+    form { display: grid; gap: .6rem; grid-template-columns: 1fr 1fr auto; align-items: end; }
+    label { font-size: .85rem; color: #555; display: grid; gap: .25rem; }
+    input { padding: .55rem; border: 1px solid #bbb; border-radius: 6px; font-size: 1rem; }
+    button { padding: .6rem 1rem; background: var(--teal); color: #fff; border: 0; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    button:disabled { opacity: .5; }
+    #estado { min-height: 1.4rem; font-size: .9rem; color: #555; margin: .5rem 0 1rem; }
+    .resumen { display: flex; gap: 1.5rem; margin: 1rem 0; }
+    .resumen div { font-size: .85rem; color: #555; }
+    .resumen strong { display: block; font-size: 1.4rem; color: var(--teal); }
+    .barras { display: grid; gap: .3rem; }
+    .fila { display: grid; grid-template-columns: 7rem 1fr 2.5rem; align-items: center; gap: .5rem; font-size: .85rem; }
+    .barra { height: 1.1rem; background: var(--gold); border-radius: 3px; min-width: 2px; }
+    footer { margin-top: 2rem; font-size: .75rem; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Encuesta viva</h1>
+  <div class="pregunta" id="pregunta"></div>
+
+  <form id="formulario">
+    <label>Tu alias (opcional)<input id="alias" maxlength="30" placeholder="ej. dac"></label>
+    <label>Tu respuesta<input id="valor" type="number" step="0.1" required placeholder="ej. 4.2"></label>
+    <button id="enviar" type="submit">Enviar</button>
+  </form>
+  <div id="estado"></div>
+
+  <div class="resumen">
+    <div>Respuestas<strong id="n">0</strong></div>
+    <div>Mediana<strong id="mediana">–</strong></div>
+    <div>Promedio<strong id="promedio">–</strong></div>
+  </div>
+  <div class="barras" id="barras"></div>
+
+  <footer>Los resultados se actualizan solos cada 5 segundos. Datos en Supabase, página en Vercel, código en GitHub.</footer>
+
+  <!-- supabase-js sin build step: expone la variable global "supabase" -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    // ============ CONFIGURACIÓN: cambia estas tres líneas ============
+    const PREGUNTA = "¿Cuál será la inflación anual de México en septiembre de 2026, según INEGI? (en %)";
+    const SUPABASE_URL = "https://TU-PROYECTO.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_TU_LLAVE_PUBLICA";
+    // La llave "publishable" es pública a propósito: lo que protege los datos
+    // son las políticas de la base (RLS), no el secreto. La llave "secret"
+    // NUNCA va en este archivo ni en el repo.
+    // ==================================================================
+
+    const { createClient } = supabase;
+    const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+    document.getElementById("pregunta").textContent = PREGUNTA;
+
+    const $ = (id) => document.getElementById(id);
+
+    async function enviar(evento) {
+      evento.preventDefault();
+      $("enviar").disabled = true;
+      $("estado").textContent = "Enviando...";
+      const fila = {
+        pregunta: PREGUNTA,
+        alias: $("alias").value.trim() || null,
+        valor: Number($("valor").value),
+      };
+      const { error } = await db.from("respuestas").insert(fila);
+      if (error) {
+        $("estado").textContent = "Error al guardar: " + error.message;
+      } else {
+        $("estado").textContent = "Guardado. Gracias.";
+        $("valor").value = "";
+        await cargar();
+      }
+      $("enviar").disabled = false;
+    }
+
+    async function cargar() {
+      const { data, error } = await db
+        .from("respuestas")
+        .select("valor")
+        .eq("pregunta", PREGUNTA)
+        .order("created_at", { ascending: true });
+      if (error) { $("estado").textContent = "Error al leer: " + error.message; return; }
+      dibujar(data.map((r) => Number(r.valor)));
+    }
+
+    function dibujar(valores) {
+      $("n").textContent = valores.length;
+      if (valores.length === 0) { $("barras").innerHTML = ""; return; }
+      const ordenados = [...valores].sort((a, b) => a - b);
+      const m = ordenados.length;
+      const mediana = m % 2 ? ordenados[(m - 1) / 2] : (ordenados[m / 2 - 1] + ordenados[m / 2]) / 2;
+      const promedio = valores.reduce((s, v) => s + v, 0) / m;
+      $("mediana").textContent = mediana.toFixed(2);
+      $("promedio").textContent = promedio.toFixed(2);
+
+      // Histograma en 8 cajas entre el mínimo y el máximo
+      const min = ordenados[0], max = ordenados[m - 1];
+      const cajas = 8, ancho = (max - min) / cajas || 1;
+      const conteo = Array(cajas).fill(0);
+      for (const v of valores) {
+        const i = Math.min(cajas - 1, Math.floor((v - min) / ancho));
+        conteo[i]++;
+      }
+      const tope = Math.max(...conteo);
+      $("barras").innerHTML = conteo.map((c, i) => {
+        const desde = (min + i * ancho).toFixed(1), hasta = (min + (i + 1) * ancho).toFixed(1);
+        return `<div class="fila"><span>${desde} a ${hasta}</span><div class="barra" style="width:${(100 * c) / tope}%"></div><span>${c}</span></div>`;
+      }).join("");
+    }
+
+    $("formulario").addEventListener("submit", enviar);
+    cargar();
+    setInterval(cargar, 5000);
+  </script>
+</body>
+</html>
